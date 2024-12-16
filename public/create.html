@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Волки Толки</title>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <button onclick="window.history.back()">◁</button>
+            <h3>Создать эфир</h3>
+            <button>Сменить тему</button>
+        </div>
+    </div>
+    <div>
+        <form id="start-stream-form" method="post" action="/api/startstream">
+            <input type="text" name="streamname" placeholder="Название эфира" required>
+            <fieldset>
+                <legend>Продолжительность эфира:</legend>
+                <label class="radio-label">
+                    <input type="radio" name="stream_duration" value="0.5" required>
+                    30 мин.
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="stream_duration" value="1">
+                    1 час
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="stream_duration" value="3">
+                    3 часа
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="stream_duration" value="12">
+                    12 часов
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="stream_duration" value="24">
+                    24 часа
+                </label>
+            </fieldset>
+            <fieldset>
+                <legend>Продолжительность голосового:</legend>
+                <label class="radio-label">
+                    <input type="radio" name="voice_message_duration" value="8" required>
+                    8 сек.
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="voice_message_duration" value="10">
+                    10 сек.
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="voice_message_duration" value="30">
+                    30 сек.
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="voice_message_duration" value="60">
+                    1 мин.
+                </label>
+            </fieldset>
+            <fieldset>
+                <legend>Кто может говорить:</legend>
+                <label class="radio-label">
+                    <input type="radio" name="select-allowed-users" onclick="setCurrentUser()" required>
+                    Только я
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="select-allowed-users" onclick="document.getElementById('speaker-ids').value = '[]'; fetchUsersBySubscribedToId()">
+                    Подписчики канала
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="select-allowed-users" onclick="document.getElementById('speaker-ids').value = '[]'; document.getElementById('choose-users-modal').style.display = 'block'; ">
+                    Конкретные пользователи
+                </label>
+            </fieldset>
+            <fieldset>
+                <legend>Закрытый эфир:</legend>
+                <label class="radio-label">
+                    <input type="radio" name="isprivate" value="0" onchange="document.getElementById('streampass').style.display = 'none'; document.getElementById('streampass').required=false;" required>
+                    Нет
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="isprivate" value="1" onchange="document.getElementById('streampass').style.display = 'inline-block'; document.getElementById('streampass').required=true;">
+                    Да
+                </label>
+                <input type="number" placeholder="Пароль" name="streampass" id="streampass" style="display: none;">
+            </fieldset>
+            <input type="hidden" id="speaker-ids" name="speaker_ids" value="[]">
+            <input type="submit" value="Создать эфир">
+        </form>
+    </div>
+    <!--Поле поиска пользователей-->
+    <div id="choose-users-modal" style="position: absolute; width: 100%; height: 100%; top: 0; left: 0; background-color: white; display: none;">
+        <div class="header">
+            <div>
+                <button onclick="document.getElementById('choose-users-modal').style.display = 'none'; document.getElementById('user-search').value = '';">◁</button>
+                <h3>Создать эфир</h3>
+                <button>Сменить тему</button>
+            </div>
+        </div>
+        <label>
+            <input type="text" id="user-search" placeholder="Поиск">
+        </label>
+        <ul id="user-list">
+            <!--Здесь будут отображаться пользователи-->
+        </ul>
+    </div>
+
+    <!--Скрипт для выбора тех, кто может говорить-->
+    <script>
+        const SEARCH_USERS_API = '/api/searchusers';
+        const GET_SUBSCRIBERS_API = '/api/getsubs';
+        const userId = 1; // Получить id пользователя каким либо способом
+        const userList = document.getElementById('user-list');
+        const searchField = document.getElementById('user-search'); // Поле поиска
+        const speakerIds = document.getElementById('speaker-ids');
+
+        searchField.addEventListener('input', async (event) => {
+            const value = event.target.value;
+            userList.innerHTML = '';
+            await fetchUsersBySearchQuery(value);
+        });
+
+        async function fetchUsersBySearchQuery(query) {
+            try {
+                // Запрос пользователей с сервера
+                const response = await fetch(`${SEARCH_USERS_API}?query=${encodeURIComponent(query)}`);
+                if (!response.ok) {
+                    throw new Error('Ошибка загрузки данных');
+                    userList.innerHTML = '<p>Не удалось загрузить пользователей</p>';
+                }
+                const users = await response.json();
+                const allowedUsersList = JSON.parse(speakerIds.value);
+                
+                // Вывод на страницу
+                users.forEach(user => {
+                    const li = document.createElement('li');
+
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.value = user.id;
+                    checkbox.checked = allowedUsersList.includes(user.id);
+                    checkbox.onclick = selectUserCheckboxHandler;
+
+                    const label = document.createElement('label');
+                    label.textContent = user.username;
+
+                    label.prepend(checkbox);
+                    li.appendChild(label);
+                    userList.appendChild(li);
+                });
+            }
+            catch (e) {
+                console.error(e);
+                userList.innerHTML = '<p>Не удалось загрузить пользователей</p';
+            }
+        }
+
+        function selectUserCheckboxHandler(event) {
+            let allowedUsersList = JSON.parse(speakerIds.value);
+            if (event.target.checked == true) {
+                allowedUsersList.push(Number(event.target.value));
+            }
+            else {
+                allowedUsersList = allowedUsersList.filter(item => item != Number(event.target.value));
+            }
+            speakerIds.value = JSON.stringify(allowedUsersList);
+        }
+
+        async function fetchUsersBySubscribedToId(event) {
+            // Запрос пользователей с сервера
+            try {
+                const response = await fetch(`${GET_SUBSCRIBERS_API}?id=${userId}`)
+                if (!response.ok) {
+                    throw new Error('Ошибка загрузки данных');
+                }
+
+                const data = await response.json();
+                let allowedUsersList = [];
+                data.forEach(user => allowedUsersList.push(user.subscriber_id));
+                speakerIds.value = JSON.stringify(allowedUsersList);
+            }
+            catch (e) {
+                console.log(e);
+                userList.innerHTML = '<p>Не удалось загрузить пользователей</p';
+            }
+        }
+
+        function setCurrentUser(event) {
+            speakerIds.value = `[${userId}]`;
+        }
+    </script>
+</body>
+</html>

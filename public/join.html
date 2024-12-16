@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Волки Толки</title>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <button onclick="window.history.back()">◁</button>
+            <h3>Подключиться к эфиру</h3>
+            <button>Сменить тему</button>
+        </div>
+    </div>
+    <div>
+        <input type="text" id="search-field" placeholder="Поиск">
+        <ul id="stream-list">
+
+        </ul>
+    </div>
+    <div id="enter-pass-modal" style="display: none;">
+        <label>
+            Пароль
+            <input type="number" id="pass-input-field">
+            <p id="server-message-field"></p>
+        </label>
+    </div>
+
+    <!--Скрипт для поиска эфиров-->
+    <script>
+        const SEARCH_STREAMS_API = '/api/searchstreams';
+        const JOIN_STREAM_API = '/api/joinstream';
+        const searchField = document.getElementById('search-field');
+        const streamList = document.getElementById('stream-list');
+        const passInputField = document.getElementById('pass-input-field');
+        const serverMessageField = document.getElementById('server-message-field');
+
+        searchField.addEventListener('input', async (event) => {
+            const value = event.target.value;
+            streamList.innerHTML = '';
+            fetchStreamsBySearchQuery(value);
+        });
+
+        window.addEventListener('DOMContentLoaded', async (event) => { // Первоначальное заполнение страницы
+            fetchStreamsBySearchQuery('');
+        });
+
+        async function connectToStream(event) {
+            // Попытка зайти на эфир
+            const response = await fetch(`${JOIN_STREAM_API}/${event.target.value}`, {
+                method: "POST", 
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                redirect: 'follow',
+                body: JSON.stringify({password: passInputField.value})
+            });
+            if (await response.redirected) {
+                const redirectUrl = response.url;
+                if (redirectUrl) {
+                    window.location.href = redirectUrl;
+                }
+            }
+            else {
+                document.getElementById('enter-pass-modal').style.display = 'block';
+                serverMessageField.innerText = await response.text();
+            }
+        }
+
+        async function fetchStreamsBySearchQuery(query) {
+            // Запрос эфиров с сервера
+            const response = await fetch(`${SEARCH_STREAMS_API}?query=${encodeURIComponent(query)}`);
+            if (!response.ok) {
+                throw new Error('Ошибка загрузки данных');
+                streamList.innerHTML = '<p>Не удалось загрузить пользователей</p>';
+            }
+            const streams = await response.json();
+
+            // Вывод на страницу
+            streams.forEach(stream => {
+                const li = document.createElement('li');
+
+                const button = document.createElement('button');
+                button.innerHTML = 'Присоединиться';
+                button.value = stream.id;
+                button.onclick = connectToStream;
+
+                const label = document.createElement('label');
+                label.textContent = stream.name;
+
+                label.prepend(button);
+                li.appendChild(label);
+                streamList.appendChild(li);
+            });
+        }
+    </script>
+</body>
+</html>
