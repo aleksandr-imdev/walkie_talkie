@@ -17,29 +17,6 @@
         <form id="start-stream-form" method="post" action="/api/startstream">
             <input type="text" name="streamname" placeholder="Название эфира" required>
             <fieldset>
-                <legend>Продолжительность эфира:</legend>
-                <label class="radio-label">
-                    <input type="radio" name="stream_duration" value="0.5" required>
-                    30 мин.
-                </label>
-                <label class="radio-label">
-                    <input type="radio" name="stream_duration" value="1">
-                    1 час
-                </label>
-                <label class="radio-label">
-                    <input type="radio" name="stream_duration" value="3">
-                    3 часа
-                </label>
-                <label class="radio-label">
-                    <input type="radio" name="stream_duration" value="12">
-                    12 часов
-                </label>
-                <label class="radio-label">
-                    <input type="radio" name="stream_duration" value="24">
-                    24 часа
-                </label>
-            </fieldset>
-            <fieldset>
                 <legend>Продолжительность голосового:</legend>
                 <label class="radio-label">
                     <input type="radio" name="voice_message_duration" value="8" required>
@@ -110,55 +87,49 @@
     <script>
         const SEARCH_USERS_API = '/api/searchusers';
         const GET_SUBSCRIBERS_API = '/api/getsubs';
-        const userId = 1; // Получить id пользователя каким либо способом
         const userList = document.getElementById('user-list');
         const searchField = document.getElementById('user-search'); // Поле поиска
         const speakerIds = document.getElementById('speaker-ids');
 
         searchField.addEventListener('input', async (event) => {
             const value = event.target.value;
-            userList.innerHTML = '';
             await fetchUsersBySearchQuery(value);
         });
 
         async function fetchUsersBySearchQuery(query) {
-            try {
-                // Запрос пользователей с сервера
-                const response = await fetch(`${SEARCH_USERS_API}?query=${encodeURIComponent(query)}`);
-                if (!response.ok) {
-                    throw new Error('Ошибка загрузки данных');
-                    userList.innerHTML = '<p>Не удалось загрузить пользователей</p>';
-                }
-                const users = await response.json();
-                const allowedUsersList = JSON.parse(speakerIds.value);
-                
-                // Вывод на страницу
-                users.forEach(user => {
-                    const li = document.createElement('li');
+            userList.innerHTML = '';
 
-                    const checkbox = document.createElement('input');
-                    checkbox.type = 'checkbox';
-                    checkbox.value = user.id;
-                    checkbox.checked = allowedUsersList.includes(user.id);
-                    checkbox.onclick = selectUserCheckboxHandler;
-
-                    const label = document.createElement('label');
-                    label.textContent = user.username;
-
-                    label.prepend(checkbox);
-                    li.appendChild(label);
-                    userList.appendChild(li);
-                });
+            // Запрос пользователей с сервера
+            const response = await fetch(`${SEARCH_USERS_API}?query=${encodeURIComponent(query)}`);
+            if (!response.ok) {
+                throw new Error('Ошибка загрузки данных');
+                userList.innerHTML = '<p>Не удалось загрузить пользователей</p>';
             }
-            catch (e) {
-                console.error(e);
-                userList.innerHTML = '<p>Не удалось загрузить пользователей</p';
-            }
+            const users = await response.json();
+            const allowedUsersList = JSON.parse(speakerIds.value);
+            
+            // Вывод на страницу
+            users.forEach(user => {
+                const li = document.createElement('li');
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = user.id;
+                checkbox.checked = allowedUsersList.includes(user.id);
+                checkbox.onclick = selectUserCheckboxHandler;
+
+                const label = document.createElement('label');
+                label.textContent = user.username;
+
+                label.prepend(checkbox);
+                li.appendChild(label);
+                userList.appendChild(li);
+            });
         }
 
         function selectUserCheckboxHandler(event) {
             let allowedUsersList = JSON.parse(speakerIds.value);
-            if (event.target.checked == true) {
+            if (event.target.checked) {
                 allowedUsersList.push(Number(event.target.value));
             }
             else {
@@ -169,25 +140,20 @@
 
         async function fetchUsersBySubscribedToId(event) {
             // Запрос пользователей с сервера
-            try {
-                const response = await fetch(`${GET_SUBSCRIBERS_API}?id=${userId}`)
-                if (!response.ok) {
-                    throw new Error('Ошибка загрузки данных');
-                }
+            const response = await fetch(`${GET_SUBSCRIBERS_API}`)
+            if (!response.ok) {
+                throw new Error('Ошибка загрузки данных');
+                streamList.innerHTML = '<p>Не удалось загрузить пользователей</p>';
+            }
 
-                const data = await response.json();
-                let allowedUsersList = [];
-                data.forEach(user => allowedUsersList.push(user.subscriber_id));
-                speakerIds.value = JSON.stringify(allowedUsersList);
-            }
-            catch (e) {
-                console.log(e);
-                userList.innerHTML = '<p>Не удалось загрузить пользователей</p';
-            }
+            const data = await response.json();
+            let allowedUsersList = [];
+            data.forEach(user => allowedUsersList.push(user.subscriber_id));
+            speakerIds.value = JSON.stringify(allowedUsersList);
         }
 
         function setCurrentUser(event) {
-            speakerIds.value = `[${userId}]`;
+            speakerIds.value = '[]';
         }
     </script>
 </body>

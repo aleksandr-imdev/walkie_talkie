@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Волки Толки</title>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <button onclick="window.history.back()">◁</button>
+            <h3><%= name %></h1>
+            <button>Сменить тему</button>
+        </div>
+    </div>
+    <div>
+        <button id="join-button">Нажмите, чтобы начать слушать</button>
+        <h3>Эфир #<%= streamId %>></h3>
+        <a id="see-user-list" onclick="document.getElementById('see-users-modal').style.display = 'block';">0 online</a>
+        <a id="see-messages-list" onclick="document.getElementById('see-messages-modal').style.display = 'block';">Сообщения</a>
+        <button id="talk-button">Говорить</button>
+        <h3>Ограничение: <%= messageDuration %> сек</h3>
+        <audio id="remote-audio"></audio>
+        <h4 id="status-message"></h4>
+        <button id="end-stream-button">Завершить эфир</button>
+    </div>
+    <!--Поле со списком пользователей-->
+    <div id="see-users-modal" style="position: absolute; width: 100%; height: 100%; top: 0; left: 0; background-color: white; display: none;">
+        <div class="header">
+            <div>
+                <button onclick="document.getElementById('see-users-modal').style.display = 'none';">◁</button>
+                <h3>Пользователи онлайн</h3>
+                <button>Сменить тему</button>
+            </div>
+        </div>
+        <ul id="user-list">
+            <!--Здесь будут отображаться пользователи-->
+        </ul>
+    </div>
+    <!--Поле с сообщениями-->
+    <div id="see-messages-modal" style="position: absolute; width: 100%; height: 100%; top: 0; left: 0; background-color: white; display: none;">
+        <div class="header">
+            <div>
+                <button onclick="document.getElementById('see-messages-modal').style.display = 'none';">◁</button>
+                <h3>История эфира</h3>
+                <button>Сменить тему</button>
+            </div>
+        </div>
+        <ul id="message-list">
+            <!--Здесь будут отображаться сообщения-->
+        </ul>
+    </div>
+    <script>
+        const streamId = Number('<%= streamId %>');
+        const messageDuration = Number('<%= messageDuration %>');
+    </script>
+    <script type="module" src="/js/bundle.js"></script>
+</body>
+</html>

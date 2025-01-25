@@ -38,11 +38,10 @@
 
         searchField.addEventListener('input', async (event) => {
             const value = event.target.value;
-            streamList.innerHTML = '';
             fetchStreamsBySearchQuery(value);
         });
 
-        window.addEventListener('DOMContentLoaded', async (event) => { // Первоначальное заполнение страницы
+        document.addEventListener('DOMContentLoaded', async (event) => { // Первоначальное заполнение страницы
             fetchStreamsBySearchQuery('');
         });
 
@@ -53,7 +52,6 @@
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                redirect: 'follow',
                 body: JSON.stringify({password: passInputField.value})
             });
             if (await response.redirected) {
@@ -69,6 +67,8 @@
         }
 
         async function fetchStreamsBySearchQuery(query) {
+            streamList.innerHTML = '';
+
             // Запрос эфиров с сервера
             const response = await fetch(`${SEARCH_STREAMS_API}?query=${encodeURIComponent(query)}`);
             if (!response.ok) {
