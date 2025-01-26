@@ -6,6 +6,8 @@ const mediasoupOptions = {
     // Настройки Worker
     worker: {
         logLevel: 'warn',
+        rtcMinPort: 10000,
+        rtcMaxPort: 20000,
     },
     router: {
         mediaCodecs: [
@@ -19,7 +21,7 @@ const mediasoupOptions = {
     },
 };
 
-// Параметры mediasoup
+// Объекты mediasoup
 let worker, router;
 
 // Запускаем Mediasoup
@@ -43,7 +45,8 @@ const validateSocketInRoom = (socket, handler) => {
 
             // Если сокет состоит в комнате, вызываем обработчик
             await handler(...args);
-        } catch (e) {
+        } 
+        catch (e) {
             console.error('Ошибка в validateSocketInRoom:', e);
             socket.emit('error', 'Произошла ошибка при обработке запроса.');
         }
@@ -186,36 +189,32 @@ module.exports = (io, socket) => {
         try {
             // Создаем два транспорта: один для отправки, другой для получения
             const sendTransport = await router.createWebRtcTransport({
-                listenIps: [{ip: '0.0.0.0', announcedIp: '127.0.0.1'}],
+                listenIps: [{ip: '0.0.0.0', announcedIp: '5.35.92.106'}],
                 enableUdp: true,
                 enableTcp: true,
                 preferUdp: true,
-                iceServers: {
-                    iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        {
-                            urls: 'turn:turn.bistri.com:80',
-                            username: 'homeo',
-                            credential: 'homeo',
-                        },
-                    ]
-                }
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    {
+                        urls: 'turn:openrelay.metered.ca:80',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    }
+                ]
             });
             const recvTransport = await router.createWebRtcTransport({
-                listenIps: [{ip: '0.0.0.0', announcedIp: '127.0.0.1'}],
+                listenIps: [{ip: '0.0.0.0', announcedIp: '5.35.92.106'}],
                 enableUdp: true,
                 enableTcp: true,
                 preferUdp: true,
-                iceServers: {
-                    iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        {
-                            urls: 'turn:turn.bistri.com:80',
-                            username: 'homeo',
-                            credential: 'homeo',
-                        },
-                    ]
-                }
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    {
+                        urls: 'turn:openrelay.metered.ca:80',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    }
+                ]
             });
 
             socket.sendTransport = sendTransport;
@@ -244,23 +243,6 @@ module.exports = (io, socket) => {
         catch (e) {
             console.log('Ошибка get-transports:', e);
             socket.emit('error', 'Ошибка получения транспортов');
-        }
-    });
-
-    socket.on('transport-ice-candidate', async ({ type, candidate }) => {
-        try {
-            if (type === 'send') {
-                await socket.sendTransport.addIceCandidate(candidate);
-                console.log('sendTransport ice завершён');
-            } 
-            else if (type === 'recv') {
-                await socket.recvTransport.addIceCandidate(candidate);
-                console.log('recvTransport ice завершён');
-            }
-        } 
-        catch (e) {
-            console.log('Ошибка transport-ice-candidate:', e);
-            socket.emit('error', 'Ошибка при установке ICE candidate');
         }
     });
 

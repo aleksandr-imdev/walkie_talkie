@@ -23,7 +23,8 @@ let consumer = null;
 let localStream = null;
 let localTrack = null;
 
-let remainingTime = messageDuration;
+let remainingTime = null;
+let lastUpdateTime = null;
 let talkingInterval = null; // Храним ID интервала
 
 // Для вывода сообщений через сокет
@@ -40,10 +41,11 @@ function getCurrentTimestamp() {
 }     
 
 function updateTalkingMessage() {
-    remainingTime -= 0.1;
-    if (remainingTime < 0) {
-        remainingTime = 0;
-    }
+    const currentTime = Date.now();
+    const elapsedTime = (currentTime - lastUpdateTime) / 1000; // Время, прошедшее с последнего обновления
+    remainingTime = Math.max(0, remainingTime - elapsedTime); // Вычитаем прошедшее время
+    lastUpdateTime = currentTime;
+
     statusMessageElement.innerText = `Говорите! Осталось ${remainingTime.toFixed(1)}с`;
 
     if (remainingTime <= 0) {
@@ -108,12 +110,6 @@ socket.on('transport-created', async (transportData) => {
             errback(e);
         }
     });
-    sendTransport.on('icecandidate', (candidate) => {
-        if (candidate) {
-            console.log('Отправка ICE-кандидата для sendTransport:', candidate);
-            socket.emit('transport-ice-candidate', { type: 'send', candidate: candidate.toJSON() });
-        }
-    });
 
     recvTransport = device.createRecvTransport(transportData.recvTransport);
     console.log('Recv Transport создан');
@@ -136,12 +132,6 @@ socket.on('transport-created', async (transportData) => {
         }
         catch (e) {
             errback(e);
-        }
-    });
-    recvTransport.on('icecandidate', (candidate) => {
-        if (candidate) {
-            console.log('Отправка ICE-кандидата для recvTransport:', candidate);
-            socket.emit('transport-ice-candidate', { type: 'recv', candidate: candidate.toJSON() });
         }
     });
 });
@@ -183,8 +173,9 @@ async function startTalking() {
         socket.emit('start-talking', streamId, producer.id);
         isTalking = true;
         statusMessageElement.innerText = 'Говорите';
+
         remainingTime = messageDuration;
-        updateTalkingMessage();
+        lastUpdateTime = Date.now();
         talkingInterval = setInterval(updateTalkingMessage, 100);
     } 
     catch (e) {
