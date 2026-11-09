@@ -1,19 +1,120 @@
-# Walkie Talkie Streaming
+# Walkie-Talkie (Node.js + WebSockets + WebRTC)
 
-An app for meeting with one speaker format.
+Архитектурный прототип (Proof of Concept) сервиса голосовых комнат реального времени с механикой рации (**Push-to-Talk**) и единым активным спикером.
 
-Node.js + simple frontend. Server uses Express + WebSocket + Mediasoup.
+Приложение построено на базе медиа-сервера **Mediasoup (SFU)** и сигналинга через **Socket.io**.
 
-## Stack
-- Node.js / Express
-- Webpack + EJS
-- MySQL (для пользователей)
-- Web Audio API
+---
 
-## How to launch
-1. `git clone ...`
-2. `install dependencies`
-3. `Setup the DB credentials`
-4. `npm run dev`
+## 🚀 Архитектура и возможности
 
-It implements SFU routing for connected users on one sever.
+- **WebRTC SFU (Selective Forwarding Unit):** Маршрутизация медиа-потоков через Mediasoup без необходимости прямого p2p-соединения между всеми участниками (снижает исходящую нагрузку на клиентов).
+- **Push-to-Talk (PTT) с жестким таймингом:**
+  - Ограничение времени монолога (настраиваемый таймер эфира: 8с, 10с, 30с, 60с).
+  - Атомарная блокировка одновременного эфира (`already-speaking`): пока говорит один спикер, остальные участники ждут освобождения канала.
+- **Ролевая модель:**
+  - **Admin (создатель):** Завершение эфира, управление правами, назначение модераторов, кик и бан участников.
+  - **Moderator (спикер):** Право выходить в эфир и модерировать слушателей.
+  - **Listener (слушатель):** Прослушивание входящего аудиопотока и чтение истории эфира.
+- **Безопасность и персистентность:**
+  - Хеширование паролей стримов через `bcrypt`.
+  - Транзакционное сохранение сообщений и ролей в MySQL с защитой от race conditions (`FOR UPDATE`).
+  - Поддержка подписанных сессионных cookies.
+  - Конфигурация через переменные окружения (`dotenv`).
+
+---
+
+## 🛠 Стек технологий
+
+- **Backend:** Node.js, Express, Socket.io
+- **Media Engine:** Mediasoup v3 (SFU, Opus audio codec 48kHz, WebRTC Transports)
+- **Database:** MySQL (mysql2 с пулом соединений и промисами)
+- **Frontend:** Vanilla JS, Mediasoup Client, Socket.io Client, Webpack 5, EJS
+
+---
+
+## 📋 Структура проекта
+
+```text
+├── commmgr.js               # Модуль WebSockets и Mediasoup (комнаты, транспорты, роли)
+├── index.js                 # Точка входа: инициализация Express, Socket.io и Mediasoup
+├── mysql.js                 # Слой работы с БД: транзакции, стримы, сообщения
+├── passmgr.js               # Хеширование и валидация паролей (bcrypt)
+├── usermgr.js               # Проверка авторизации и работа с сессиями
+├── routes/
+│   ├── api.js               # REST API: поиск пользователей, создание и подключение к эфирам
+│   └── debugging_purposes.js# Эндпоинты отладки (отключены в production)
+├── public/
+│   ├── html/                # EJS шаблоны и страницы (интерфейс стрима, создание, подключение)
+│   └── js/client.js         # Клиентская логика: WebRTC Web-Audio, Socket.io события
+├── schema.sql               # Дамп структуры базы данных MySQL
+└── .env.example             # Пример конфигурации окружения
+```
+
+---
+
+## ⚙️ Установка и запуск
+
+### 1. Клонирование репозитория
+```bash
+git clone https://github.com/aleksandr-imdev/walkie_talkie.git
+cd walkie_talkie
+```
+
+### 2. Установка зависимостей
+```bash
+npm install
+```
+
+> **Примечание:** Для сборки Mediasoup требуются инструменты сборки C++ (`make`, `gcc`/`clang`, `python3`). На macOS они доступны через `xcode-select --install`.
+
+### 3. Инициализация базы данных
+Создайте базу данных MySQL и примените схему:
+```bash
+mysql -u root -p < schema.sql
+```
+
+### 4. Настройка переменных окружения
+Скопируйте пример файла конфигурации:
+```bash
+cp .env.example .env
+```
+Отредактируйте `.env`, указав параметры подключения к MySQL и ваш IP:
+```env
+PORT=3000
+NODE_ENV=development
+
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=your_password
+DB_NAME=walkie_talkie
+
+# Для локальной разработки 127.0.0.1; на сервере укажите публичный IPv4
+ANNOUNCED_IP=127.0.0.1
+COOKIE_SECRET=your_secret_key_here
+```
+
+### 5. Сборка клиентского бандла
+```bash
+npm run build
+```
+
+### 6. Запуск сервера
+Режим разработки (с горячей перезагрузкой Webpack):
+```bash
+npm run start:dev
+```
+Режим продакшена:
+```bash
+npm start
+```
+Сервер будет доступен по адресу: `http://localhost:3000`.
+
+---
+
+## 🔒 Безопасность
+
+- В продакшене все отладочные пути `/debug/*` автоматически блокируются.
+- Авторизационные токены/куки валидируются на сервере перед подключением к Socket.io.
+- Приватные эфиры защищены паролем с верификацией хеша перед выдачей роли `listener`.

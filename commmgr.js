@@ -1,13 +1,13 @@
+require('dotenv').config();
 const mediasoup = require('mediasoup');
 const queries = require('./mysql');
 
-// Конфигурация
+// Конфигурация Mediasoup
 const mediasoupOptions = {
-    // Настройки Worker
     worker: {
-        logLevel: 'warn',
-        rtcMinPort: 10000,
-        rtcMaxPort: 20000,
+        logLevel: process.env.MEDIASOUP_LOG_LEVEL || 'warn',
+        rtcMinPort: Number(process.env.RTC_MIN_PORT) || 10000,
+        rtcMaxPort: Number(process.env.RTC_MAX_PORT) || 20000,
     },
     router: {
         mediaCodecs: [
@@ -24,26 +24,39 @@ const mediasoupOptions = {
 // Объекты mediasoup
 let worker, router;
 
-// Запускаем Mediasoup
+// Запуск Mediasoup
 async function setupMediasoup() {
-    worker = await mediasoup.createWorker(mediasoupOptions.worker);
-    router = await worker.createRouter({ mediaCodecs: mediasoupOptions.router.mediaCodecs });
-}
-setupMediasoup().then(() => console.log('Mediasoup запущен'));
+    if (worker && router) return router;
 
+    worker = await mediasoup.createWorker(mediasoupOptions.worker);
+    worker.on('died', () => {
+        console.error('Критическая ошибка: Mediasoup Worker завершил работу. Перезапуск процесса...');
+        process.exit(1);
+    });
+
+    router = await worker.createRouter({ mediaCodecs: mediasoupOptions.router.mediaCodecs });
+    console.log('Mediasoup Worker и Router успешно запущены');
+    return router;
+}
+
+// Запуск при старте
+setupMediasoup().catch(e => {
+    console.error('Ошибка инициализации Mediasoup:', e);
+});
+
+// Middleware проверки нахождения сокета в комнате
 const validateSocketInRoom = (socket, handler) => {
     return async (...args) => {
         try {
-            const room = args[0]; // Предполагаем, что первым аргументом всегда будет имя комнаты
+            const room = String(args[0]);
             const rooms = Array.from(socket.rooms);
 
             if (!rooms.includes(room)) {
-                console.log(`Сокет ${socket.id} не состоит в комнате ${room}, хотя вызвал обработчик для неё`);
+                console.warn(`Сокет ${socket.id} не состоит в комнате ${room}`);
                 socket.emit('warn', 'Вы не состоите в данной комнате.');
                 return;
             }
 
-            // Если сокет состоит в комнате, вызываем обработчик
             await handler(...args);
         } 
         catch (e) {
@@ -53,63 +66,75 @@ const validateSocketInRoom = (socket, handler) => {
     };
 };
 
-module.exports = (io, socket) => {
+const communicationManager = (io, socket) => {
     socket.on('join-room', async (room) => {
         try {
-            let [response] = await queries.getParticipantRoleByIds(room, socket.userId);
-            socket.role = response.role;
+            const roomId = Number(room);
+            let [response] = await queries.getParticipantRoleByIds(roomId, socket.userId);
+            
+            if (!response) {
+                // Если роли нет, по умолчанию слушатель
+                await queries.addStreamParticipantRoleByIds(roomId, socket.userId, 'listener');
+                socket.role = 'listener';
+            } else {
+                socket.role = response.role;
+            }
 
             [response] = await queries.getUsernameById(socket.userId);
-            socket.username = response.username;
+            socket.username = response ? response.username : `User_${socket.userId}`;
 
             socket.emit('role-updated', socket.role);
             if (socket.role === 'banned') {
-                socket.disconnect();
+                socket.emit('warn', 'Вы заблокированы в этом эфире');
+                socket.disconnect(true);
                 return;
             }
 
-            socket.join(room);
-            console.log(`Пользователь ${socket.id} зашёл в комнату ${room}`);
+            const roomStr = String(roomId);
+            socket.join(roomStr);
+            console.log(`Пользователь ${socket.username} (${socket.id}) вошел в комнату ${roomStr}`);
 
-            // Отправляем сообщение, что пользователь зашёл
-            await queries.addMessageToStreamById(room, socket.userId, `Участник ${response.username} зашёл`, io);
-
-            // Создаём метаданные комнаты
-            if (!io.sockets.adapter.customData[room]) {
-                [response] = await queries.getStreamInfoById(room);
-                io.sockets.adapter.customData[room] = {
-                    messageDuration: response.message_duration,
+            // Создаём метаданные комнаты в памяти, если их еще нет
+            if (!io.sockets.adapter.customData) {
+                io.sockets.adapter.customData = {};
+            }
+            if (!io.sockets.adapter.customData[roomStr]) {
+                const [streamInfo] = await queries.getStreamInfoById(roomId);
+                io.sockets.adapter.customData[roomStr] = {
+                    messageDuration: streamInfo ? streamInfo.message_duration : 10,
                     currentSpeakerId: null,
                     currentSpeakerUsername: null,
-                    timerId: null,
+                    timer: null,
                     producer: null,
                 };
             }
 
-            // Устанавливаем количество участников
-            const participantsAmount = io.sockets.adapter.rooms.get(room)?.size || 0;
-            io.to(room).emit('users-amount', participantsAmount);
+            // Уведомляем комнату об изменении количества участников
+            const participantsAmount = io.sockets.adapter.rooms.get(roomStr)?.size || 0;
+            io.to(roomStr).emit('users-amount', participantsAmount);
 
             socket.emit('room-joined');
         } 
         catch (e) {
-            console.log('Ошибка join-room:', e);
+            console.error('Ошибка join-room:', e);
             socket.emit('error', 'Ошибка подключения к комнате');
         }
     });
 
     socket.on('start-listening', validateSocketInRoom(socket, (room) => {
         try {
-            const roomData = io.sockets.adapter.customData[room];
-            socket.emit('speaking-user', roomData.currentSpeakerUsername, roomData.producer?.id);
+            const roomData = io.sockets.adapter.customData ? io.sockets.adapter.customData[room] : null;
+            if (roomData) {
+                socket.emit('speaking-user', roomData.currentSpeakerUsername, roomData.producer?.id);
+            }
         }
         catch (e) {
-            console.log('Ошибка start-listening:', e);
+            console.error('Ошибка start-listening:', e);
             socket.emit('warn', 'Ошибка первичной отправки данных о говорящем');
         }
     }));
 
-    // Пользователь начинает говорить
+    // Пользователь начинает говорить (Push-to-Talk)
     socket.on('start-talking', validateSocketInRoom(socket, async (room, producerId) => {
         try {
             if (!['admin', 'moderator'].includes(socket.role)) {
@@ -118,6 +143,8 @@ module.exports = (io, socket) => {
             }
 
             const roomData = io.sockets.adapter.customData[room];
+            if (!roomData) return;
+
             if (roomData.currentSpeakerId) {
                 socket.emit('already-speaking');
                 return;
@@ -135,93 +162,100 @@ module.exports = (io, socket) => {
                 roomData.currentSpeakerId = null;
                 roomData.currentSpeakerUsername = null;
 
-                const producer = roomData.producer;
-                if (producer) {
-                    roomData.producer.close();
+                if (roomData.producer) {
+                    try { roomData.producer.close(); } catch (_) {}
                     roomData.producer = null;
                 }
             }, roomData.messageDuration * 1000);
 
-            // Пишем в историю сообщений
-            await queries.addMessageToStreamById(room, socket.userId, `Участник ${socket.username} оставил сообщение`, io);
+            // Пишем в историю сообщений эфира
+            await queries.addMessageToStreamById(
+                Number(room),
+                socket.userId,
+                `Участник ${socket.username} оставил голосовое сообщение`,
+                io
+            );
         } 
         catch (e) {
-            console.log('Ошибка start-talking:', e);
+            console.error('Ошибка start-talking:', e);
             socket.emit('warn', 'Ошибка при попытке говорить');
         }
     }));
 
-    // Пользователь прекращает говорить
+    // Пользователь отпустил кнопку "говорить"
     socket.on('stop-talking', validateSocketInRoom(socket, async (room) => {
         try {
-            const roomData = io.sockets.adapter.customData[room];
+            const roomData = io.sockets.adapter.customData ? io.sockets.adapter.customData[room] : null;
+            if (!roomData) return;
 
             if (roomData.currentSpeakerId === socket.userId) {
                 roomData.currentSpeakerId = null;
+                roomData.currentSpeakerUsername = null;
                 socket.broadcast.to(room).emit('speaking-user', null, null);
 
-                clearTimeout(roomData.timer);
-                roomData.timer = null;
+                if (roomData.timer) {
+                    clearTimeout(roomData.timer);
+                    roomData.timer = null;
+                }
 
-                roomData.producer?.close();
-                roomData.producer = null;
+                if (roomData.producer) {
+                    try { roomData.producer.close(); } catch (_) {}
+                    roomData.producer = null;
+                }
             }
         }
         catch (e) {
-            console.log('Ошибка stop-talking:', e);
+            console.error('Ошибка stop-talking:', e);
             socket.emit('warn', 'Ошибка при завершении говорения');
         }
     }));
 
-    socket.on('get-rtp-capabilities', () => {
+    socket.on('get-rtp-capabilities', async () => {
         try {
+            if (!router) {
+                await setupMediasoup();
+            }
             socket.emit('rtp-capabilities', {
                 routerRtpCapabilities: router.rtpCapabilities,
             });
         }
         catch (e) {
-            console.log('Ошибка get-rtp-capabilities:', e);
-            socket.emit('error', 'Ошибка получения rtpCapabilites');
+            console.error('Ошибка get-rtp-capabilities:', e);
+            socket.emit('error', 'Ошибка получения rtpCapabilities');
         }
     });
     
     socket.on('get-transports', async () => {
         try {
-            // Создаем два транспорта: один для отправки, другой для получения
-            const sendTransport = await router.createWebRtcTransport({
-                listenIps: [{ip: '0.0.0.0', announcedIp: '5.35.92.106'}],
+            if (!router) {
+                await setupMediasoup();
+            }
+
+            const announcedIp = process.env.ANNOUNCED_IP || '127.0.0.1';
+            const iceServers = [
+                { urls: process.env.STUN_SERVER || 'stun:stun.l.google.com:19302' },
+            ];
+            if (process.env.TURN_SERVER && process.env.TURN_USERNAME) {
+                iceServers.push({
+                    urls: process.env.TURN_SERVER,
+                    username: process.env.TURN_USERNAME,
+                    credential: process.env.TURN_CREDENTIAL || '',
+                });
+            }
+
+            const transportOptions = {
+                listenIps: [{ ip: '0.0.0.0', announcedIp }],
                 enableUdp: true,
                 enableTcp: true,
                 preferUdp: true,
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    {
-                        urls: 'turn:openrelay.metered.ca:80',
-                        username: 'openrelayproject',
-                        credential: 'openrelayproject'
-                    }
-                ]
-            });
-            const recvTransport = await router.createWebRtcTransport({
-                listenIps: [{ip: '0.0.0.0', announcedIp: '5.35.92.106'}],
-                enableUdp: true,
-                enableTcp: true,
-                preferUdp: true,
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    {
-                        urls: 'turn:openrelay.metered.ca:80',
-                        username: 'openrelayproject',
-                        credential: 'openrelayproject'
-                    }
-                ]
-            });
+                iceServers,
+            };
+
+            const sendTransport = await router.createWebRtcTransport(transportOptions);
+            const recvTransport = await router.createWebRtcTransport(transportOptions);
 
             socket.sendTransport = sendTransport;
             socket.recvTransport = recvTransport;
-
-            console.log(`Send Transport для ${socket.id} создан:`, sendTransport.id);
-            console.log(`Recv Transport для ${socket.id} создан:`, recvTransport.id);
 
             socket.emit('transport-created', {
                 sendTransport: {
@@ -241,24 +275,22 @@ module.exports = (io, socket) => {
             });
         }
         catch (e) {
-            console.log('Ошибка get-transports:', e);
-            socket.emit('error', 'Ошибка получения транспортов');
+            console.error('Ошибка get-transports:', e);
+            socket.emit('error', 'Ошибка создания транспортов');
         }
     });
 
     socket.on('transport-connect', async ({ type, dtlsParameters }) => {
         try {
-            if (type === 'send') {
+            if (type === 'send' && socket.sendTransport) {
                 await socket.sendTransport.connect({ dtlsParameters });
-                console.log('sendTransport подключен');
             } 
-            else if (type === 'recv') {
+            else if (type === 'recv' && socket.recvTransport) {
                 await socket.recvTransport.connect({ dtlsParameters });
-                console.log('recvTransport подключен');
             }
         } 
         catch (e) {
-            console.log('Ошибка transport-connect:', e);
+            console.error('Ошибка transport-connect:', e);
             socket.emit('error', 'Ошибка при подключении транспорта');
         }
     });
@@ -266,32 +298,50 @@ module.exports = (io, socket) => {
     socket.on('produce', validateSocketInRoom(socket, async (room, parameters, callback) => {
         try {
             const roomData = io.sockets.adapter.customData[room];
+            if (!socket.sendTransport) {
+                throw new Error('sendTransport не инициализирован');
+            }
 
             const producer = await socket.sendTransport.produce(parameters);
-            roomData.producer = producer;
-            callback({ id: producer.id });
+            if (roomData) {
+                roomData.producer = producer;
+            }
+
+            if (typeof callback === 'function') {
+                callback({ id: producer.id });
+            }
 
             producer.on('transportclose', () => {
-                roomData.producer = null;
+                if (roomData && roomData.producer?.id === producer.id) {
+                    roomData.producer = null;
+                }
             });
 
             producer.on('producerclose', () => {
-                roomData.producer = null;
+                if (roomData && roomData.producer?.id === producer.id) {
+                    roomData.producer = null;
+                }
             });
         } 
         catch (e) {
-            console.log('Ошибка produce:', e);
+            console.error('Ошибка produce:', e);
             socket.emit('error', 'Ошибка при создании продюсера');
         }
     }));  
 
     socket.on('consume', async ({ producerId }, callback) => {
         try {
+            if (!router) await setupMediasoup();
+
             if (!router.canConsume({
                 producerId,
                 rtpCapabilities: router.rtpCapabilities,
             })) {
-                throw new Error('Невозможно потреблять поток с указанными rtpCapabilities');
+                throw new Error('Невозможно воспроизвести аудиопоток (rtpCapabilities несовместимы)');
+            }
+
+            if (!socket.recvTransport) {
+                throw new Error('recvTransport не инициализирован');
             }
 
             const consumer = await socket.recvTransport.consume({
@@ -303,53 +353,51 @@ module.exports = (io, socket) => {
             socket.consumer = consumer;
 
             consumer.on('transportclose', () => {
-                consumer.close();
+                try { consumer.close(); } catch (_) {}
             });
 
             consumer.on('producerclose', () => {
-                consumer.close();
+                try { consumer.close(); } catch (_) {}
             });
 
-            callback({
-                id: consumer.id,
-                producerId: producerId,
-                kind: consumer.kind,
-                rtpParameters: consumer.rtpParameters,
-            });
+            if (typeof callback === 'function') {
+                callback({
+                    id: consumer.id,
+                    producerId: producerId,
+                    kind: consumer.kind,
+                    rtpParameters: consumer.rtpParameters,
+                });
+            }
             consumer.resume();
         }
         catch (e) {
-            console.log('Ошибка consume:', e);
+            console.error('Ошибка consume:', e);
             socket.emit('error', 'Ошибка создания consumer');
         }
     });
 
     socket.on('get-stream-participants', validateSocketInRoom(socket, async (room) => {
         try {
-            const sockets = await io.in(room).fetchSockets();
-            const participants = [];
-
-            sockets.forEach(socket => {
-                participants.push({
-                    userId: socket.userId,
-                    username: socket.username,
-                });
-            });
+            const socketsInRoom = await io.in(room).fetchSockets();
+            const participants = socketsInRoom.map(s => ({
+                userId: s.userId,
+                username: s.username || `User_${s.userId}`,
+            }));
             socket.emit('stream-participants', participants);
         } 
         catch (e) {
-            console.log('Ошибка get-stream-participants:', e);
+            console.error('Ошибка get-stream-participants:', e);
             socket.emit('error', 'Ошибка получения участников эфира');
         }
     }));
 
     socket.on('get-stream-messages', validateSocketInRoom(socket, async (room) => {
         try {
-            const messages = await queries.getMessagesByStreamId(room);
+            const messages = await queries.getMessagesByStreamId(Number(room));
             socket.emit('stream-messages', messages);
         } 
         catch (e) {
-            console.log('Ошибка get-stream-messages:', e);
+            console.error('Ошибка get-stream-messages:', e);
             socket.emit('error', 'Ошибка получения сообщений');
         }
     }));
@@ -358,29 +406,29 @@ module.exports = (io, socket) => {
         try {
             if (socket.role === 'admin') {
                 io.to(room).emit('stream-ended');
-                const sockets = await io.in(room).fetchSockets();
+                const socketsInRoom = await io.in(room).fetchSockets();
 
-                sockets.forEach(socket => {
-                    socket.disconnect();
-                });
+                for (const s of socketsInRoom) {
+                    s.disconnect(true);
+                }
 
-                queries.deleteStreamById(room);
-                delete io.sockets.adapter.customData[room];
+                await queries.deleteStreamById(Number(room));
+                if (io.sockets.adapter.customData) {
+                    delete io.sockets.adapter.customData[room];
+                }
             }
             else {
-                socket.emit('warn', 'Нет права завершать эфир');
+                socket.emit('warn', 'Только создатель эфира может завершить его');
             }
         } 
         catch (e) {
-            console.log("Ошибка end-stream", e);
+            console.error("Ошибка end-stream:", e);
             socket.emit('error', 'Ошибка завершения эфира');
         }
     }));
 
     socket.on('update-role', validateSocketInRoom(socket, async (room, targetId, newRole) => {
         try {
-            console.log(`Обновление роли для ${targetId} в комнате ${room} на ${newRole}`);
-
             if (!['moderator', 'listener', 'kick', 'banned'].includes(newRole)) {
                 socket.emit('warn', 'Некорректная роль');
                 return;
@@ -391,56 +439,69 @@ module.exports = (io, socket) => {
                 return;
             }
 
-            // Найти сокет с указанным targetId и room
-            const targetSocket = [...io.sockets.sockets.values()].find(s => 
-                s.userId === targetId && s.rooms.has(room)
-            );
+            const socketsInRoom = await io.in(room).fetchSockets();
+            const targetSocket = socketsInRoom.find(s => s.userId === Number(targetId));
 
             if (!targetSocket) {
-                socket.emit('warn', 'Пользователь не найден');
+                socket.emit('warn', 'Пользователь не найден в комнате');
                 return;
             }
 
-            if (targetSocket.id === socket.id) {
-                socket.emit('warn', 'Нельзя менять роль себе');
+            if (targetSocket.userId === socket.userId) {
+                socket.emit('warn', 'Нельзя менять роль самому себе');
                 return;
             }
 
-            // Обновить роль пользователя
+            // Нельзя менять роль администратора комнаты
+            if (targetSocket.role === 'admin') {
+                socket.emit('warn', 'Нельзя изменять роль создателя эфира');
+                return;
+            }
+
+            // Модератор не может назначать модераторов или банить участников
+            if (socket.role === 'moderator' && (newRole === 'moderator' || newRole === 'banned')) {
+                socket.emit('warn', 'Только администратор может назначать модераторов или банить участников');
+                return;
+            }
+
+            // Обновляем роль в базе данных (кроме временного кика)
+            if (newRole !== 'kick') {
+                await queries.setParticipantRoleByIds(Number(room), targetId, newRole);
+            }
+
             targetSocket.role = newRole;
             targetSocket.emit('role-updated', newRole);
 
-            const roomData = io.sockets.adapter.customData[room];
+            const roomData = io.sockets.adapter.customData ? io.sockets.adapter.customData[room] : null;
 
-            if (newRole !== 'moderator' && roomData.currentSpeakerId === targetSocket.userId) {
-                roomData.producer?.close();
-                roomData.producer = null;
+            if (newRole !== 'moderator' && roomData && roomData.currentSpeakerId === targetSocket.userId) {
+                if (roomData.producer) {
+                    try { roomData.producer.close(); } catch (_) {}
+                    roomData.producer = null;
+                }
                 socket.broadcast.to(room).emit('speaking-user', null, null);
             }
             
             if (newRole === 'banned') {
-                targetSocket.disconnect();
+                if (targetSocket.recvTransport) try { targetSocket.recvTransport.close(); } catch (_) {}
+                if (targetSocket.sendTransport) try { targetSocket.sendTransport.close(); } catch (_) {}
+                targetSocket.disconnect(true);
 
-                if (targetSocket.recvTransport) targetSocket.recvTransport.close();
-                if (targetSocket.sendTransport) targetSocket.sendTransport.close();
-
-                await queries.addMessageToStreamById(room, socket.userId, `Участник ${targetSocket.username} был забанен`, io);
+                await queries.addMessageToStreamById(Number(room), socket.userId, `Участник ${targetSocket.username} был забанен`, io);
                 return;
             }
+            
             if (newRole === 'kick') {
-                targetSocket.disconnect();
+                if (targetSocket.recvTransport) try { targetSocket.recvTransport.close(); } catch (_) {}
+                if (targetSocket.sendTransport) try { targetSocket.sendTransport.close(); } catch (_) {}
+                targetSocket.disconnect(true);
 
-                if (targetSocket.recvTransport) targetSocket.recvTransport.close();
-                if (targetSocket.sendTransport) targetSocket.sendTransport.close();
-
-                await queries.addMessageToStreamById(room, socket.userId, `Участник ${targetSocket.username} был исключён`, io);
+                await queries.addMessageToStreamById(Number(room), socket.userId, `Участник ${targetSocket.username} был исключён`, io);
                 return;
             }
-
-            await queries.setParticipantRoleByIds(room, targetId, newRole);
         }
         catch(e) {
-            console.log("Ошибка update-role", e);
+            console.error("Ошибка update-role:", e);
             socket.emit('error', 'Ошибка обновления роли');
         }
     }));
@@ -450,34 +511,49 @@ module.exports = (io, socket) => {
             const rooms = Array.from(socket.rooms).filter((room) => room !== socket.id);
         
             for (const room of rooms) {
-                const roomData = io.sockets.adapter.customData[room];
-                if (roomData.currentSpeakerId === socket.userId) {
+                const roomData = io.sockets.adapter.customData ? io.sockets.adapter.customData[room] : null;
+                if (roomData && roomData.currentSpeakerId === socket.userId) {
                     roomData.currentSpeakerId = null;
+                    roomData.currentSpeakerUsername = null;
                     socket.broadcast.to(room).emit('speaking-user', null, null);
 
-                    roomData.producer?.close();
-                    roomData.producer = null;
+                    if (roomData.producer) {
+                        try { roomData.producer.close(); } catch (_) {}
+                        roomData.producer = null;
+                    }
 
-                    clearTimeout(roomData.timer);
-                    roomData.timer = null;
+                    if (roomData.timer) {
+                        clearTimeout(roomData.timer);
+                        roomData.timer = null;
+                    }
                 }
                 
-                // Закрываем транспорты
-                if (socket.sendTransport) socket.sendTransport.close();
-                if (socket.recvTransport) socket.recvTransport.close();
+                // Закрываем транспорты сокета
+                if (socket.sendTransport) {
+                    try { socket.sendTransport.close(); } catch (_) {}
+                }
+                if (socket.recvTransport) {
+                    try { socket.recvTransport.close(); } catch (_) {}
+                }
 
-                console.log(`Пользователь ${socket.id} вышел из комнаты ${room}`);
+                console.log(`Пользователь ${socket.username || socket.id} вышел из комнаты ${room}`);
                 socket.leave(room);
 
-                // Отправляем сообщение, что пользователь вышел
-                await queries.addMessageToStreamById(room, socket.userId, `Участник ${socket.username} вышел`, io);
-        
-                const participantsAmount = io.sockets.adapter.rooms.get(room)?.size || 0;
+                const currentRoom = io.sockets.adapter.rooms.get(room);
+                const participantsAmount = currentRoom ? currentRoom.size : 0;
                 io.to(room).emit('users-amount', participantsAmount);
+
+                // Очистка памяти, если комната опустела
+                if (participantsAmount === 0 && io.sockets.adapter.customData) {
+                    delete io.sockets.adapter.customData[room];
+                }
             }
         }
         catch (e) {
-            console.log('Ошибка disconnecting:', e);
+            console.error('Ошибка disconnecting:', e);
         }
     });
-}
+};
+
+module.exports = communicationManager;
+module.exports.setupMediasoup = setupMediasoup;
